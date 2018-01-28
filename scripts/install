@@ -1,48 +1,141 @@
 #!/bin/bash
 
-app=linuxdash
+#=================================================
+# GENERIC START
+#=================================================
+# IMPORT GENERIC HELPERS
+#=================================================
 
-# Retrieve arguments
-domain=$1
-path=$2
-user=$3
+source _common.sh
+source /usr/share/yunohost/helpers
 
-# Check domain/path availability
-sudo yunohost app checkurl $domain$path -a $app
-if [[ ! $? -eq 0 ]]; then
-    exit 1
-fi
+#=================================================
+# MANAGE SCRIPT FAILURE
+#=================================================
 
-# Check port availability
-sudo yunohost app checkport 8081
-if [[ ! $? -eq 0 ]]; then
-  exit 1
-fi
+# Exit if an error occurs during the execution of the script
+ynh_abort_if_errors
 
-# Copy files to the right place
+#=================================================
+# RETRIEVE ARGUMENTS FROM THE MANIFEST
+#=================================================
+
+domain=$YNH_APP_ARG_DOMAIN
+path_url=$YNH_APP_ARG_PATH
+user=$YNH_APP_ARG_USER
+
+app=$YNH_APP_INSTANCE_NAME
+
+#=================================================
+# CHECK IF THE APP CAN BE INSTALLED WITH THESE ARGS
+#=================================================
+
 final_path=/var/www/$app
-sudo mkdir -p $final_path
-sudo cp -a ../sources/* $final_path
+test ! -e "$final_path" || ynh_die "This path already contains a folder"
 
-# Set permissions
-sudo chown -R www-data: $final_path
+# Normalize the url path syntax
+path_url=$(ynh_normalize_url_path $path_url)
+
+# Check web path availability
+ynh_webpath_available $domain $path_url
+# Register (book) web path
+ynh_webpath_register $app $domain $path_url
+
+#=================================================
+# STORE SETTINGS FROM MANIFEST
+#=================================================
+
+ynh_app_setting_set $app domain $domain
+ynh_app_setting_set $app path $path_url
+ynh_app_setting_set $app user $user
+
+#=================================================
+# STANDARD MODIFICATIONS
+#=================================================
+# INSTALL DEPENDENCIES
+#=================================================
+
+ynh_install_app_dependencies supervisor
+
+#=================================================
+# DOWNLOAD, CHECK AND UNPACK SOURCE
+#=================================================
+
+ynh_app_setting_set $app final_path $final_path
+# Download, check integrity, uncompress and patch the source from app.src
+ynh_setup_source "$final_path"
+
+#=================================================
+# FIND AND OPEN A PORT
+#=================================================
+
+# Find a free port
+port=$(ynh_find_port 8081)
+# Open this port
+yunohost firewall allow --no-upnp TCP $port 2>&1
+ynh_app_setting_set $app port $port
+
+# For v2.0 only
+# ynh_replace_string "default=80" "default=$port" "$final_path/app/server/index.py"
+ynh_replace_string "'localhost', 8081" "'localhost', $port" "$final_path/python-server.py"
+
+#=================================================
+# NGINX CONFIGURATION
+#=================================================
+
+# Create a dedicated nginx config
+if [ "$path_url" != "/" ]
+then
+	ynh_replace_string "^#sub_path_only" "" "../conf/nginx.conf"
+fi
+ynh_add_nginx_config
+
+#=================================================
+# CREATE DEDICATED USER
+#=================================================
+
+# Create a system user
+ynh_system_user_create $app
+
+#=================================================
+# SPECIFIC SETUP
+#=================================================
+# SET SUPERVISOR
+#=================================================
 
 # Set as a service with supervisor
-sudo apt-get -y -qq install supervisor
-sudo cp ../conf/supervisor.conf /etc/supervisor/conf.d/$app.conf
-sudo supervisorctl update
-sudo supervisorctl start $app
+cp ../conf/supervisor.conf /etc/supervisor/conf.d/$app.conf
+ynh_replace_string "__APP__" "$app" "/etc/supervisor/conf.d/$app.conf"
+ynh_replace_string "__FINALPATH__" "$final_path" "/etc/supervisor/conf.d/$app.conf"
+ynh_replace_string "__USER__" "$app" "/etc/supervisor/conf.d/$app.conf"
 
-# Modify Nginx configuration file and copy it to Nginx conf directory
-sed -i "s@YNH_WWW_PATH@$path@g" ../conf/nginx.conf
-nginxconf=/etc/nginx/conf.d/$domain.d/$app.conf
-sudo cp ../conf/nginx.conf $nginxconf
-sudo chown root: $nginxconf
-sudo chmod 600 $nginxconf
+supervisorctl update
+supervisorctl restart $app
 
-# Only give one user access to this app
-sudo yunohost app removeaccess $app
-sudo yunohost app addaccess $app -u $user
+#=================================================
+# REMOVE GOOGLE !!!
+#=================================================
 
-# Reload web server
-sudo service nginx reload
+sed --in-place "/googlecode\|googleapis/d" "$final_path/index.html"
+
+#=================================================
+# GENERIC FINALIZATION
+#=================================================
+# SECURE FILES AND DIRECTORIES
+#=================================================
+
+# Set permissions to app files
+chown -R root: $final_path
+
+#=================================================
+# SETUP SSOWAT
+#=================================================
+
+# Restrict access to admin only
+yunohost app addaccess --users=$user $app
+
+#=================================================
+# RELOAD NGINX
+#=================================================
+
+systemctl reload nginx

@@ -1,0 +1,6 @@
+SOURCE_URL=https://github.com/afaqurk/linux-dash/archive/2.0.tar.gz
+SOURCE_SUM=f7342807ecadd22410614336378311a356e04a18569f64935ea67b9bc27ccd56
+SOURCE_SUM_PRG=sha256sum
+SOURCE_FORMAT=tar.gz
+SOURCE_IN_SUBDIR=true
+SOURCE_FILENAME=

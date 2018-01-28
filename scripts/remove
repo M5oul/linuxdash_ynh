@@ -1,19 +1,72 @@
 #!/bin/bash
 
-app=linuxdash
-domain=$(sudo yunohost app setting $app domain)
+#=================================================
+# GENERIC START
+#=================================================
+# IMPORT GENERIC HELPERS
+#=================================================
 
-# Remove sources and nginx configuration
-sudo rm -rf /var/www/$app
-sudo rm -f /etc/nginx/conf.d/$domain.d/$app.conf
+source _common.sh
+source /usr/share/yunohost/helpers
+
+#=================================================
+# LOAD SETTINGS
+#=================================================
+
+app=$YNH_APP_INSTANCE_NAME
+
+domain=$(ynh_app_setting_get $app domain)
+port=$(ynh_app_setting_get $app port)
+final_path=$(ynh_app_setting_get $app final_path)
+
+#=================================================
+# STANDARD REMOVE
+#=================================================
+# REMOVE APP MAIN DIR
+#=================================================
+
+# Remove the app directory securely
+ynh_secure_remove "$final_path"
+
+#=================================================
+# REMOVE NGINX CONFIGURATION
+#=================================================
+
+# Remove the dedicated nginx config
+ynh_remove_nginx_config
+
+#=================================================
+# CLOSE A PORT
+#=================================================
+
+if yunohost firewall list | grep -q "\- $port$"
+then
+	echo "Close port $port"
+	yunohost firewall disallow TCP $port 2>&1
+fi
+
+#=================================================
+# SPECIFIC REMOVE
+#=================================================
+# REMOVE SUPERVISOR
+#=================================================
 
 # Remove service
-sudo supervisorctl stop $app
-sudo rm -f /etc/supervisor/conf.d/$app.conf
+supervisorctl stop $app
+ynh_secure_remove /etc/supervisor/conf.d/$app.conf
 
-# Remove supervisor package
-# Need to be manage with future manifest/moulinette Debian package management
-# sudo apt-get -y -qq remove supervisor
+#=================================================
+# REMOVE DEPENDENCIES
+#=================================================
 
-# Reload nginx configuration
-sudo service nginx reload
+# Remove metapackage and its dependencies
+ynh_remove_app_dependencies
+
+#=================================================
+# GENERIC FINALIZATION
+#=================================================
+# REMOVE DEDICATED USER
+#=================================================
+
+# Delete a system user
+ynh_system_user_delete $app

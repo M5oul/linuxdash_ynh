@@ -1,30 +1,122 @@
 #!/bin/bash
 
-# Retrieve settings
-app=linuxdash
-domain=$(sudo yunohost app setting $app domain)
-path=$(sudo yunohost app setting $app path)
+#=================================================
+# GENERIC START
+#=================================================
+# IMPORT GENERIC HELPERS
+#=================================================
 
-# Remove trailing "/" for next commands
-path=${path%/}
+source _common.sh
+source /usr/share/yunohost/helpers
 
-# Copy files to the right place
-final_path=/var/www/$app
-sudo mkdir -p $final_path
-sudo cp -a ../sources/* $final_path
+#=================================================
+# LOAD SETTINGS
+#=================================================
 
-# Set permissions
-sudo chown -R www-data: $final_path
+app=$YNH_APP_INSTANCE_NAME
 
-# Modify Nginx configuration file and copy it to Nginx conf directory
-sed -i "s@YNH_WWW_PATH@$path@g" ../conf/nginx.conf
-nginxconf=/etc/nginx/conf.d/$domain.d/$app.conf
-sudo cp ../conf/nginx.conf $nginxconf
-sudo chown root: $nginxconf
-sudo chmod 600 $nginxconf
+domain=$(ynh_app_setting_get $app domain)
+path_url=$(ynh_app_setting_get $app path)
+user=$(ynh_app_setting_get $app admin)
+final_path=$(ynh_app_setting_get $app final_path)
+port=$(ynh_app_setting_get $app port)
 
-# Restart Linux-dash service
-sudo supervisorctl restart $app
+#=================================================
+# ENSURE DOWNWARD COMPATIBILITY
+#=================================================
 
-# Reload web server & sso
-sudo service nginx reload
+# If final_path doesn't exist, create it
+if [ -z $final_path ]; then
+	final_path=/var/www/$app
+	ynh_app_setting_set $app final_path $final_path
+fi
+
+#=================================================
+# BACKUP BEFORE UPGRADE THEN ACTIVE TRAP
+#=================================================
+
+# Backup the current version of the app
+ynh_backup_before_upgrade
+ynh_clean_setup () {
+	# restore it if the upgrade fails
+	ynh_restore_upgradebackup
+}
+# Exit if an error occurs during the execution of the script
+ynh_abort_if_errors
+
+#=================================================
+# CHECK THE PATH
+#=================================================
+
+# Normalize the URL path syntax
+path_url=$(ynh_normalize_url_path $path_url)
+
+#=================================================
+# STANDARD UPGRADE STEPS
+#=================================================
+# DOWNLOAD, CHECK AND UNPACK SOURCE
+#=================================================
+
+# Download, check integrity, uncompress and patch the source from app.src
+ynh_setup_source "$final_path"
+
+#=================================================
+# NGINX CONFIGURATION
+#=================================================
+
+# Create a dedicated nginx config
+if [ "$path_url" != "/" ]
+then
+	ynh_replace_string "^#sub_path_only" "" "../conf/nginx.conf"
+fi
+ynh_add_nginx_config
+
+#=================================================
+# CREATE DEDICATED USER
+#=================================================
+
+# Create a system user
+ynh_system_user_create $app
+
+#=================================================
+# SPECIFIC UPGRADE
+#=================================================
+# UPGRADE SUPERVISOR
+#=================================================
+
+# Set as a service with supervisor
+cp ../conf/supervisor.conf /etc/supervisor/conf.d/$app.conf
+ynh_replace_string "__APP__" "$app" "/etc/supervisor/conf.d/$app.conf"
+ynh_replace_string "__FINALPATH__" "$final_path" "/etc/supervisor/conf.d/$app.conf"
+ynh_replace_string "__USER__" "$app" "/etc/supervisor/conf.d/$app.conf"
+
+supervisorctl update
+supervisorctl restart $app
+
+#=================================================
+# REMOVE GOOGLE !!!
+#=================================================
+
+sed --in-place "/googlecode\|googleapis/d" "$final_path/index.html"
+
+#=================================================
+# GENERIC FINALIZATION
+#=================================================
+# SECURE FILES AND DIRECTORIES
+#=================================================
+
+# Set right permissions for curl installation
+chown -R root: $final_path
+
+#=================================================
+# SETUP SSOWAT
+#=================================================
+
+# Restrict access to admin only
+yunohost app addaccess --users=$user $app
+
+#=================================================
+# RELOAD NGINX
+#=================================================
+
+systemctl reload nginx
